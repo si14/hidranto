@@ -1,0 +1,12 @@
+{application, hidranto,
+ [
+  {description, ""},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { hidranto_app, []}},
+  {env, []}
+ ]}.
