@@ -3,8 +3,8 @@
 -include("hidranto.hrl").
 
 %% API
--export([start_link/0]).
--export([ask/3]).
+-export([start_link/1]).
+-export([new/1, ask/2]).
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
@@ -16,8 +16,8 @@
 -record(state, {req_count   :: integer()}).
 
 %%% API
-start_link() ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+start_link(Asker) ->
+    gen_server:start_link(?MODULE, [Asker], []).
 
 ask(Worker, Asker) ->
     gen_server:call(Worker, {ask, Asker}, 1000).
@@ -29,7 +29,7 @@ new(Asker) ->
 %%% gen_server callbacks
 init([Asker]) ->
     gproc:reg({n, l, {asker, Asker}}),
-    {ok, #state{timeout_ref=TimeoutRef}, ?SHUTDOWN_TIMEOUT}.
+    {ok, #state{}, ?SHUTDOWN_TIMEOUT}.
 
 handle_call(Request, _From, State) ->
     lager:warning("unknown call in ~p: ~p", [?MODULE, Request]),
