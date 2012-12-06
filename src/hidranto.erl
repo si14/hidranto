@@ -13,6 +13,7 @@
 -define(SERVER, ?MODULE).
 
 -define(SIMULTANEOUS_REQS, 3).
+-define(MIN_DELAY, 1000000).
 
 -record(state, {}).
 
@@ -26,9 +27,11 @@ start() ->
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
-test(Asker) ->
+test(Asker, T) ->
     case ask(Asker, t) of
-        {ok, Ref} -> spawn(fun() -> timer:sleep(5000), hidranto:done(Ref) end);
+        {ok, Ref} ->
+            io:format("Spawn with ref ~p~n", [Ref]),
+            spawn(fun() -> timer:sleep(T), hidranto:done(Ref) end);
         Other -> Other
     end.
 
@@ -54,37 +57,50 @@ precheck_asker_count(Asker, Triplets) ->
 %%               the exact reason of one, and lookup+insert isn't
 %%               atomic in concurrent environment (therefore update_counter)
 check_asker_count(Asker, Triplets) ->
-    case ets:update_counter(hidranto_asker_counts, Asker, {2, 1}) of
+    case ets:update_counter(hidranto_asker_counts, Asker, 1) of
         X when X < ?SIMULTANEOUS_REQS ->
-            precheck_asker_rate(Asker, Triplets);
-        _ -> ets:update_counter(hidranto_asker_counts, Asker, {2, -1}),
-             busy
+            check_asker_rate(Asker, Triplets);
+        _ -> deny_ask(Asker)
     end.
 
-precheck_asker_rate(Asker, Triplets) ->
+check_asker_rate(Asker, Triplets) ->
     case ets:lookup(hidranto_asker_rates, Asker) of
-        [{Asker, LastAskTime, LastRate}] ->
-            check_asker_rate(Asker, Triplets, LastAskTime, LastRate);
+        [{Asker, LastAskTime, MinDelay}] ->
+            Now = os:timestamp(),
+            case time_diff(LastAskTime, Now) > MinDelay of
+                false -> deny_ask(Asker);
+                true ->
+                    ets:insert(hidranto_asker_rates, {Asker, Now, MinDelay}),
+                    allow_ask(Asker, Triplets)
+            end;
         [] ->
             %% TODO(Dmitry): GC this table!
-            ets:insert(hidranto_asker_rates, {Asker, os:timestamp(), 0.0}),
+            ets:insert(hidranto_asker_rates,
+                       {Asker, os:timestamp(), ?MIN_DELAY}),
             allow_ask(Asker, Triplets)
     end.
 
-check_asker_rate(Asker, Triplets, LastAskTime, LastRate) ->
-    %% FIXME(Dmitry): write this
-    allow_ask(Asker, Triplets).
-
-allow_ask(Asker, Triplets) ->
+allow_ask(Asker, _Triplets) ->
     Ref = erlang:make_ref(),
     %% TODO(Dmitry): GC this table!
     ets:insert(hidranto_refs_to_askers, {Ref, Asker,
                                          os:timestamp()}),
     {ok, Ref}.
 
+deny_ask(Asker) ->
+    ets:update_counter(hidranto_asker_counts, Asker, -1),
+    busy.
+
+time_diff({Mega1, S1, Micro1}, {Mega2, S2, Micro2}) ->
+    abs(Mega2 - Mega1) * 1000 * 1000 * 1000 * 1000 +
+        abs(S2 - S1) * 1000 * 1000 +
+        abs(Micro2 - Micro1).
+
 done(Ref) ->
+    io:format("Done: ~p~n", [Ref]),
     [{Ref, Asker, _}] = ets:lookup(hidranto_refs_to_askers, Ref),
-    ets:update_counter(hidranto_asker_counts, Asker, {2, -1}),
+    K = ets:update_counter(hidranto_asker_counts, Asker, -1),
+    io:format("Counter: ~p~n", [K]),
     ets:delete(hidranto_refs_to_askers, Ref),
     ok.
 
@@ -102,6 +118,8 @@ init([]) ->
     ets:new(hidranto_asker_counts, [public, named_table]),
     ets:new(hidranto_asker_rates, [public, named_table]),
     ets:new(hidranto_refs_to_askers, [public, named_table]),
+    ets:new(hidranto_config, [public, named_table,
+                              {read_concurrency, true}]),
     ets:new(asker_queues, [public, named_table,
                            {write_concurrency, true}]),
     {ok, #state{}}.
