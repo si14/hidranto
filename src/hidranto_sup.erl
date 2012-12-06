@@ -20,4 +20,4 @@ init([]) ->
     {ok, { {one_for_one, 5, 10},
            [?CHILD(hidranto, worker),
             ?CHILD(hidranto_asker_sup, supervisor),
-            ?CHILD(hidranto_asker, worker)]} }.
+            ?CHILD(hidranto_queue, worker)]} }.

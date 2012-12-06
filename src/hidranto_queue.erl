@@ -1,4 +1,4 @@
--module(hidranto_asker).
+-module(hidranto_queue).
 -behaviour(gen_server).
 -include("hidranto.hrl").
 
@@ -20,12 +20,8 @@
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
-ask2(Asker) ->
-    AskerWorker = case gproc:where({n, l, {asker, Asker}}) of
-                      undefined -> hidranto_asker_worker:new(Asker);
-                      Pid when is_pid(Pid) -> Pid
-                  end,
-    hidranto_asker_worker:ask(AskerWorker, Asker).
+enqueue(Triplets) ->
+    ok.
 
 %%% gen_server callbacks
 init([]) ->

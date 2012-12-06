@@ -28,7 +28,7 @@ start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 test(Asker, T) ->
-    case ask(Asker, t) of
+    case ask(Asker) of
         {ok, Ref} ->
             io:format("Spawn with ref ~p~n", [Ref]),
             spawn(fun() -> timer:sleep(T), hidranto:done(Ref) end);
@@ -36,19 +36,36 @@ test(Asker, T) ->
     end.
 
 ask(Asker, Triplets) ->
-    precheck_asker_count(Asker, Triplets).
+    case ask(Asker) of
+        {ok, AskerRef} ->
+            case hidranto_queue:enqueue(Triplets) of
+                {ok, QueueRef} ->
+                    {ok, {AskerRef, QueueRef}};
+                {error, _Reason}=Err ->
+                    done(AskerRef),
+                    Err
+            end;
+        {error, _Reason}=Err -> Err
+    end.
 
-precheck_asker_count(Asker, Triplets) ->
+ask(Asker) ->
+    precheck_asker_count(Asker).
+
+enqueue(AskerRef, Triplets) ->
+    hidranto_queue:enqueue(Triplets).
+
+precheck_asker_count(Asker) ->
     %% NOTE(Dmitry): maybe it's better to skip lookup to impore ETS
     %% performance under concurrent load
     %% NOTE(Dmitry): set of Askers is finite and quite small
     case ets:lookup(hidranto_asker_counts, Asker) of
         [{Asker, X}] when X < ?SIMULTANEOUS_REQS ->
-            check_asker_count(Asker, Triplets);
-        [{Asker, _}] -> busy; %% fast path (1 ETS lookup for spammers)
+            check_asker_count(Asker);
+        %% fast path (1 ETS lookup for spammers)
+        [{Asker, _}] -> {error, too_much};
         [] ->
             ets:insert(hidranto_asker_counts, {Asker, 0}),
-            check_asker_count(Asker, Triplets)
+            check_asker_count(Asker)
     end.
 
 %% NOTE(Dmitry): 2 stages because update_counter can't tell us if
@@ -56,40 +73,40 @@ precheck_asker_count(Asker, Triplets) ->
 %%               and I don't want to catch all badargs - I don't know
 %%               the exact reason of one, and lookup+insert isn't
 %%               atomic in concurrent environment (therefore update_counter)
-check_asker_count(Asker, Triplets) ->
+check_asker_count(Asker) ->
     case ets:update_counter(hidranto_asker_counts, Asker, 1) of
         X when X < ?SIMULTANEOUS_REQS ->
-            check_asker_rate(Asker, Triplets);
-        _ -> deny_ask(Asker)
+            check_asker_rate(Asker);
+        _ -> deny_ask(Asker, too_much)
     end.
 
-check_asker_rate(Asker, Triplets) ->
+check_asker_rate(Asker) ->
     case ets:lookup(hidranto_asker_rates, Asker) of
         [{Asker, LastAskTime, MinDelay}] ->
             Now = os:timestamp(),
             case time_diff(LastAskTime, Now) > MinDelay of
-                false -> deny_ask(Asker);
+                false -> deny_ask(Asker, too_often);
                 true ->
                     ets:insert(hidranto_asker_rates, {Asker, Now, MinDelay}),
-                    allow_ask(Asker, Triplets)
+                    allow_ask(Asker)
             end;
         [] ->
             %% TODO(Dmitry): GC this table!
             ets:insert(hidranto_asker_rates,
                        {Asker, os:timestamp(), ?MIN_DELAY}),
-            allow_ask(Asker, Triplets)
+            allow_ask(Asker)
     end.
 
-allow_ask(Asker, _Triplets) ->
+allow_ask(Asker) ->
     Ref = erlang:make_ref(),
     %% TODO(Dmitry): GC this table!
     ets:insert(hidranto_refs_to_askers, {Ref, Asker,
                                          os:timestamp()}),
     {ok, Ref}.
 
-deny_ask(Asker) ->
+deny_ask(Asker, Reason) ->
     ets:update_counter(hidranto_asker_counts, Asker, -1),
-    busy.
+    {error, Reason}.
 
 time_diff({Mega1, S1, Micro1}, {Mega2, S2, Micro2}) ->
     abs(Mega2 - Mega1) * 1000 * 1000 * 1000 * 1000 +
